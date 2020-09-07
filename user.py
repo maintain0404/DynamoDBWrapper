@@ -12,21 +12,4 @@ user_input_validator = functools.partial(jsonschema.validate,
 
 
 class User(BaseItemWrapper):
-    def __init__(self, sk = '', request_type = 'read'):
-        super().__init__(pk = "USER", sk = sk, request_type = request_type)
-
-    def to_internal(self, new_data, nickname = '00000000'):
-        try:
-            self._data['pk'] = 'USER'
-            self._data['sk'] = 'google#' + new_data['sub']
-            self._data['User'] = 'nickname'
-            self._data['ClosedUserData'] = {}
-            if new_data['email_verified']:
-                self._data['ClosedUserData']['UserEmail'] = new_data['email']
-            else:
-                self._data['ClosedUserData']['UserEmail'] = ''
-            self._data['ClosedUserData']['UserName'] = new_data['name']
-            self._data['ClosedUserData']['UserLocale'] = new_data['locale']
-            self._data['ClosedUserData']['RiotID'] = []
-        except Exception as err:
-            raise ValidationError    
+    pass

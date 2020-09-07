@@ -51,7 +51,6 @@ def sk_is_valid(input_sk):
     return True
 
 class BaseItemWrapper:
-
     def __init__(self, table_name = 'Practice'):
         self.table_name = table_name
         self.table = dynamodb.Table(self.table_name)
@@ -101,6 +100,7 @@ class BaseItemWrapper:
 
     def read(self = None, pk = None, sk = None, attributes_to_get = []):
         if self is None:
+            print('none self')
             self = BaseItemWrapper()
         # Item에는 순전히 결과만 포함되어 있음, 추가 정보를 나중에 수정할 것
         self.request = functools.partial(self.table.get_item,
@@ -155,7 +155,14 @@ class BaseItemWrapper:
         assert(callable(self.request),
             'Please set request by create, read, update and delete'
         )
-        return self.request()
+        try:
+            result = self.request()
+        except Exception as error:
+            if error.__class__ is "ConditionalCheckFailedException":
+                if self.request_type is 'create':
+                    raise DataAlreadyExistsError
+        else:
+            return result
 
     # def data_is_valid(self, raise_exception = False):
     #     assert (self.request_type == "create" or 'update', 
