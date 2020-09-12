@@ -1,0 +1,55 @@
+{
+    "type" : "object",
+    "properties" : {
+        "pk" : {
+            "type" : "string",
+            "pattern" : "USER"
+        },
+        "sk" : {
+            "type" : "string",
+            "description" : "고유 id를 나타냅니다."
+        },
+        "User" : {
+            "type" : "string",
+            "description" : "닉네임을 나타냅니다."
+        },
+        "ClosedUserData" : {
+            "type" : "object",
+            "description" : "비공개 정보입니다.",
+            "properties" : {
+                "Email" : {
+                    "type" : "string",
+                    "format" : "email"
+                },
+                "Locale" : {
+                    "type" : "string"
+                },
+                "RiotID" : {
+                    "type" : "array",
+                    "items" : {
+                        "type" : "object",
+                        "properties" :{
+                            "PUUID" : "string",
+                            "Name" : {"type" : "string"},
+                            "Authenticated" : {
+                                "type" : "boolean"
+                            },
+                            "IconID" : {"type":"number"},
+                            "required" : [
+                                "PUUID", "Name", "Authenticated", "IconID"
+                            ]
+                        }
+                    }
+                },
+                "required" : [
+                    "UserName",
+                    "UserEmail",
+                    "UserLocale"
+                ]
+            }
+        }
+    },
+    "required" : [
+        "pk", "sk", "ClosedUserData"
+    ]
+}

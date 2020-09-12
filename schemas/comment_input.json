@@ -1,0 +1,17 @@
+{
+    "type" : "Object",
+    "properties" : {
+        "CommentContent" : {
+            "type" : "String"
+        },
+        "Nickname" : {
+            "type" : "String"
+        },
+        "required" : [
+            "post_title",
+            "video_url",
+            "post_content",
+            "nickname"
+        ]
+    }
+}
