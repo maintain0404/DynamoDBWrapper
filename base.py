@@ -25,6 +25,10 @@ class DataAlreadyExistsError(Exception):
     def __init__(self):
         super().__init__("Data is already exists.")
 
+class DatabaseServerFailedError(Exception):
+    def __init__(self):
+        super().__init__("Database request failed from database server")
+
 class SK:
     VIDEO = "vid#"
     POST = "pst#"
@@ -100,7 +104,6 @@ class BaseItemWrapper:
 
     def read(self = None, pk = None, sk = None, attributes_to_get = []):
         if self is None:
-            print('none self')
             self = BaseItemWrapper()
         # Item에는 순전히 결과만 포함되어 있음, 추가 정보를 나중에 수정할 것
         self.request = functools.partial(self.table.get_item,
@@ -110,8 +113,11 @@ class BaseItemWrapper:
             }
         )
         if attributes_to_get:
-            self.request.keywords['ProjectionExpression'] = ', '.join(attributes_to_get)
-        
+            exp_atrb_names = [f'#{chr(x + 65)}' for x in range(len(attributes_to_get))]
+            self.request.keywords['ExpressionAttributeNames'] = dict(zip(exp_atrb_names, attributes_to_get))
+            self.request.keywords['ProjectionExpression'] = ', '.join(exp_atrb_names)
+
+
         self.request_type = 'read'
         return self
 
@@ -141,7 +147,8 @@ class BaseItemWrapper:
     def delete(self = None, pk = None, sk = None):
         if self is None:
             self = BaseItemWrapper()
-        # 지워도 되는지 검증하는 절차가 필요하지 않을까?\'ResponseMetadata': {'RequestId': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'HTTPStatusCode': 200, 'HTTPHeaders': {'server': 'Server', 'date': 'Thu, 03 Sep 2020 14:57:58 GMT', 'content-type': 'application/x-amz-json-1.0', 'content-length': '2', 'connection': 'keep-alive', 'x-amzn-requestid': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'x-amz-crc32': '2745614147'}, 'RetryAttempts': 0}}
+        # 지워도 되는지 검증하는 절차가 필요하지 않을까?\
+        # 'ResponseMetadata': {'RequestId': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'HTTPStatusCode': 200, 'HTTPHeaders': {'server': 'Server', 'date': 'Thu, 03 Sep 2020 14:57:58 GMT', 'content-type': 'application/x-amz-json-1.0', 'content-length': '2', 'connection': 'keep-alive', 'x-amzn-requestid': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'x-amz-crc32': '2745614147'}, 'RetryAttempts': 0}}
         self.request = functools.partial(self.table.delete_item,
             Key = {
                 'pk' : pk,
@@ -155,14 +162,17 @@ class BaseItemWrapper:
         assert(callable(self.request),
             'Please set request by create, read, update and delete'
         )
+        result = {}
         try:
             result = self.request()
         except Exception as error:
             if error.__class__ is "ConditionalCheckFailedException":
                 if self.request_type is 'create':
                     raise DataAlreadyExistsError
+                else:
+                    raise error
         else:
-            return result
+            return result.get('Item')
 
     # def data_is_valid(self, raise_exception = False):
     #     assert (self.request_type == "create" or 'update', 
