@@ -2,118 +2,107 @@ import json
 import boto3
 from boto3.dynamodb.conditions import *
 import os
-import datetime
-import functools
+from math import inf
+from functools import partial, reduce
+from datetime import datetime
+from .dynamodb_settings import *
 
 import secret_keys
 
 dynamodb = boto3.resource('dynamodb',
-    region_name = 'ap-northeast-2', # 서울
-    aws_access_key_id = secret_keys.aws_secret['AWS']['Access Key ID'],
-    aws_secret_access_key = secret_keys.aws_secret['AWS']['Security Access Key'],
+    region_name = REGION_NAME, # 서울
+    aws_access_key_id = AWS_ACCESS_KEY_ID,
+    aws_secret_access_key = AWS_SECRET_ACCESS_KEY,
 )   
 
 class ValidationError(Exception):
     def __init__(self):
         super().__init__('Invalid data')
 
-class InvaildPrimaryKeyError(Exception):
+class InvalidUpdateExpressionsError(Exception):
     def __init__(self):
-        super().__init__("PK and SK must exist or must not exist simultaneously")
+        super().__init__('Invalid UpdateExpressions')
 
-class DataAlreadyExistsError(Exception):
+class RequestNotSetError(Exception):
     def __init__(self):
-        super().__init__("Data is already exists.")
+        super().__init__("Request is not set")
 
-class DatabaseServerFailedError(Exception):
-    def __init__(self):
-        super().__init__("Database request failed from database server")
+class SearchKey:
+    keys = AVAILABLE_SEARCH_KEYS
 
-class SK:
-    VIDEO = "vid#"
-    POST = "pst#"
-    COMMENT = "cmt#"
-    PLIKE = "plk#"
-    CLIKE = "clk#"
-
-def make_new_sk(data_type : str, time_code = None):
-    if data_type == 'video':
-        type_prefix = SK.VIDEO
-    elif data_type == 'post':
-        type_prefix = SK.POST
-    elif data_type == 'comment':
-        type_prefix = SK.COMMENT
-    elif data_type == 'post_like':
-        type_prefix = SK.PLIKE
-    elif data_type == 'comment_like':
-        type_prefix = SK.CLIKE
-    else:
-        raise ValueError('data_type "%s" is not valid data_type' % data_type)
-    return type_prefix + datetime.datetime.now().strftime('%Y:%m:%d:%H:%M:%S:%f')
-
-def sk_is_valid(input_sk):
-    return True
+    @classmethod
+    def make_new(cls, data_type : str):
+        type_prefix = cls.keys.get(data_type)
+        if type_prefix:
+            return type_prefix + datetime.now().strftime('%Y:%m:%d:%H:%M:%S:%f')
+        else:
+            raise ValueError('data_type "%s" is not valid data_type' % data_type)
 
 class BaseItemWrapper:
-    def __init__(self, table_name = 'Practice'):
-        self.table_name = table_name
-        self.table = dynamodb.Table(self.table_name)
-        self._attributes_to_get = []
+    table = dynamodb.Table(TABLE_NAME)
+
+    def __init__(self):
         self.request_type = None
-        self._validators = []
-        self._update_expressions = []
-        self._update_values = {}
         self.request = None
 
+    @staticmethod
+    def _init_value_key_generator(max_num: int = -1):
+        count = 0
+        if max_num < 0:
+            max_num = inf    
+        while count < max_num:
+            count += 1
+            yield reduce((lambda total, x: f'{total}{chr(int(x) + 65)}'), str(count), ':')
+        
     def _add_update_expression(self, utype, path, value = None, overwrite = False):
-        # 26개 이하로 요청할것
-        value_key = f':{chr(len(self._update_values) + 65)}'
-        if utype == 'SET':
+        if value:
+            value_key = next(self._value_key_generator)
             self._update_values[value_key] = value
-            uexp = f'SET {path} = {value_key}'
-        elif utype == 'LIST_APPEND':
-            self._update_values[value_key] = [value]
-            uexp = f'SET {path} = list_append({path}, {value_key})'
-        elif utype == 'ADD_NUMBER':
-            self._update_values[value_key] = value
-            uexp = f'ADD {path} {value_key}' 
+            if utype == 'SET':
+                if overwrite:
+                    self._update_expressions['SET'] = f'{path} = {value_key}'
+                else:
+                    self._update_expressions['SET'] = f'{path} = if_not_exists({path}, {value_key})'
+            elif utype == 'LIST_APPEND':
+                self._update_expressions['SET'] = f'{path} = list_append({path}, {value_key})'
+            elif utype == 'ADD':
+                self._update_expressions['ADD'] = f'{path} {value_key}'
+            elif utype == 'DELETE':
+                self._update_expressions['DELETE'] = f'{path} {value_key}'
+            else:
+                raise InvalidUpdateExpressionsError
         elif utype == 'REMOVE':
-            uexp = f'REMOVE {path}'
-        elif utype == 'DELETE':
-            uexp = f'DELETE {path}'
-        self._update_expressions.append(uexp)
-
+            self._update_expressions['REMOVE'] = f'{path}'
+        else:
+            raise InvalidUpdateExpressionsError
+        
     def create(self = None, data = {}, overwrite = False):
         if self is None:
             self = BaseItemWrapper()
-        self.request = functools.partial(self.table.put_item, Item = data)
+        self.request = partial(self.table.put_item, Item = data)
+        self.data = data
+        self.overwrite = overwrite
+
         if not overwrite:
             self.request.keywords['ConditionExpression'] = And(Attr('sk').not_exists(), Attr('pk').ne(data['pk']))
 
-        self.reqeust_type = 'create'
+        self.request_type = 'create'
         return self
-        #     except Exception as err:
-        #         if err.__class__.__name__ == 'ConditionalCheckFailedException':
-        #             raise DataAlreadyExistsError
-        #         else:
-        #             raise err
-        #     else:
-        #         return result.get('Item')
-        # else:
-        #     return False
 
     def read(self = None, pk = None, sk = None, attributes_to_get = []):
         if self is None:
             self = BaseItemWrapper()
-        # Item에는 순전히 결과만 포함되어 있음, 추가 정보를 나중에 수정할 것
-        self.request = functools.partial(self.table.get_item,
+        self.pk = pk
+        self.sk = sk
+        self.attributes_to_get = attributes_to_get
+        self.request = partial(self.table.get_item,
             Key = {
-                'pk' : pk,
-                'sk' : sk
+                PARTITION_KEY : pk,
+                SEARCH_KEY : sk
             }
         )
         if attributes_to_get:
-            exp_atrb_names = [f'#{chr(x + 65)}' for x in range(len(attributes_to_get))]
+            exp_atrb_names = [x for x in self._init_value_key_generator(len(attributes_to_get))]
             self.request.keywords['ExpressionAttributeNames'] = dict(zip(exp_atrb_names, attributes_to_get))
             self.request.keywords['ProjectionExpression'] = ', '.join(exp_atrb_names)
 
@@ -122,9 +111,12 @@ class BaseItemWrapper:
         return self
 
     def update(self = None, pk = None, sk = None, expressions = []):
-        # 현재 두 개 이상의 업데이트를 동시 진행하는 데에는 문제가 있음
         if self is None:
             self = BaseItemWrapper()
+        self._value_key_generator = self._init_value_key_generator()
+        self._update_expressions = {'SET':[],'ADD':[],'REMOVE':[],'DELETE':[]}
+        self._update_values = {}
+        
         for x in expressions:
             self._add_update_expression(
                 x['utype'],
@@ -132,76 +124,56 @@ class BaseItemWrapper:
                 value = x.get('value'),
                 overwrite = x.get('overwrite')
             )
-        self.request = functools.partial( self.table.update_item,
+        final_update_expression = ''
+        for k, v in self._update_expressions:
+            if v:
+                final_update_expression = f'{final_update_expression} {k} {", ".join(v)} '
+
+        self.request = partial( self.table.update_item,
             Key = {
-                'pk' : pk,
-                'sk' : sk
+                PARTITION_KEY : pk,
+                SEARCH_KEY : sk
             },
-            UpdateExpression = ' '.join(self._update_expressions)
+            UpdateExpression = final_update_expression
         )
         if self._update_values:
             self.request.keywords['ExpressionAttributeValues'] = self._update_values
+        
         self.request_type = 'update'
         return self
 
     def delete(self = None, pk = None, sk = None):
         if self is None:
             self = BaseItemWrapper()
-        # 지워도 되는지 검증하는 절차가 필요하지 않을까?\
-        # 'ResponseMetadata': {'RequestId': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'HTTPStatusCode': 200, 'HTTPHeaders': {'server': 'Server', 'date': 'Thu, 03 Sep 2020 14:57:58 GMT', 'content-type': 'application/x-amz-json-1.0', 'content-length': '2', 'connection': 'keep-alive', 'x-amzn-requestid': '44SN00VKKQRU17RQ7FV597JHL3VV4KQNSO5AEMVJF66Q9ASUAAJG', 'x-amz-crc32': '2745614147'}, 'RetryAttempts': 0}}
-        self.request = functools.partial(self.table.delete_item,
+        self.request = partial(selfhttps://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/dynamodb.html#valid-dynamodb-types.table.delete_item,
             Key = {
-                'pk' : pk,
-                'sk' : sk
+                PARTITION_KEY : pk,
+                SEARCH_KEY : sk
             }
         )
+        
         self.request_type = 'delete'
         return self
 
     def execute(self):
-        assert(callable(self.request),
-            'Please set request by create, read, update and delete'
-        )
+        if not callable(self.request) or self.request_type is None:
+            raise RequestNotSetError
         result = {}
         try:
             result = self.request()
         except Exception as error:
-            if error.__class__ is "ConditionalCheckFailedException":
-                if self.request_type is 'create':
-                    raise DataAlreadyExistsError
-                else:
-                    raise error
+            raise error
         else:
             return result.get('Item')
 
-    # def data_is_valid(self, raise_exception = False):
-    #     assert (self.request_type == "create" or 'update', 
-    #         "request_type must be 'create' or update to use data"
-    #     )
-    #     err = ''
-    #     for validator in self._validators:
-    #         try:
-    #             validator(self._data)
-    #         except Exception as error:
-    #             err = error
-    #             break
-    #     if err and raise_exception:
-    #         raise ValidationError
-    #     else:
-    #         return True
-
-    # def add_validator(self, func):
-    #     self._validators.append(func)
-
-
 class QueryScanSetterMixin:
-    def __init__(self, table_name="Practice", count = 30):
-        self.table_name = table_name
-        self.table = dynamodb.Table(table_name)
-        self.count = count
-        self.exclusive_start_key = None
+    def __init__(self, limit = 30, start_key = None, filter_expression = None):
+        self.table = dynamodb.Table(TABLE_NAME)
+        self.limit = limit
+        self.exclusive_start_key = start_key
         self._attributes_to_get = []
-        self.filter_expression = None
+        self.filter_expression = filter_expression
+        self.consistent_read = CONSISTENT_READ
 
     @property
     def attributes_to_get(self):
@@ -211,62 +183,49 @@ class QueryScanSetterMixin:
         for attribute in args:
             self._attributes_to_get.append(attribute)
 
+    def _execute(self, func):
+        func.keywords['Limit'] = self.limit
+        func.keywords['ConsistentRead'] = self.consistent_read
+
+        if self.filter_expression:
+            func.keywords['FilterExpression'] = self.filter_expression
+        
+        if self.exclusive_start_key:
+            func.keywords['ExclusiveStartKey'] = self.exclusive_start_key
+
+        if self.attributes_to_get:
+            projection_expression = ', '.join(self.attributes_to_get)
+            func.keywords['Select'] = 'SPECIFIC_ATTRIBUTES'
+            func.keywords['ProjectionExpression'] = projection_expression
+        
+        try:
+            result = func()
+        except Exception as err:
+            raise err
+        else:
+            return result.get('Items')
+
 class BaseQueryWrapper(QueryScanSetterMixin):
-    def __init__(self, pk, table_name = "Practice", count = 30):
-        super().__init__(table_name, count)
+    def __init__(self, pk, sk_condition = None, **kargs):
+        super().__init__(**kargs)
+        self.sk_condition = sk_condition
         self.pk = pk
 
-    def go(self):
-        final_query_func = functools.partial(self.table.query,
-            Limit = self.count,
-            KeyConditionExpression = self.pk,
-            ScanIndexForward = False,
-            ConsistentRead = False # True로 바꾸면 실시간 반영이 더 엄밀해짐
-        )
-        if self.filter_expression:
-            final_query_func.keywords['FilterExpression'] = self.filter_expression
-        
-        if self.exclusive_start_key:
-            final_query_func.keywords['ExclusiveStartKey'] = self.exclusive_start_key
-
-        if self.attributes_to_get:
-            projection_expression = ', '.join(self.attributes_to_get)
-            final_query_func.keywords['Select'] = 'SPECIFIC_ATTRIBUTES'
-            final_query_func.keywords['ProjectionExpression'] = projection_expression
-        
-        # 에러 핸들링 구현 필요
-        try:
-            result = final_query_func()
-        except Exception as err:
-            return None
+    def execute(self):
+        if self.sk_condition:
+            key_condition = And(Key(PARTITION_KEY).eq(self.pk), self.sk_condition)
         else:
-            return result
+            key_condition = Key(PARTITION_KEY).eq(self.pk)
+        return self._execute(
+            partial(self.table.query,
+                KeyConditionExpression = key_condition,
+                ScanIndexForward = False,
+            )
+        )
 
 class BaseScanWrapper(QueryScanSetterMixin):
-    def __init__(self, table_name = "Practice", count = 30):
-        super().__init__(table_name, count)
-
-    def go(self):
-        final_scan_func = functools.partial(self.table.scan,
-            Limit = self.count,
-            ConsistentRead = False # True로 바꾸면 실시간 반영이 더 엄밀해짐
+    def execute(self):
+        return self._execute(
+            partial(self.table.scan,
+            )
         )
-        if self.filter_expression:
-            final_scan_func.keywords['FilterExpression'] = self.filter_expression
-        
-        if self.exclusive_start_key:
-            final_scan_func.keywords['ExclusiveStartKey'] = self.exclusive_start_key
-
-        if self.attributes_to_get:
-            projection_expression = ', '.join(self.attributes_to_get)
-            final_scan_func.keywords['Select'] = 'SPECIFIC_ATTRIBUTES'
-            final_scan_func.keywords['ProjectionExpression'] = projection_expression
-        
-        # 에러 핸들링 구현 필요
-        try:
-            result = final_scan_func()
-        except Exception as err:
-            print(err)
-            return None
-        else:
-            return result

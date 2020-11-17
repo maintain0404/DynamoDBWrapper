@@ -1,1 +1,4 @@
 /__pycache__/
+/schemas/
+user.py
+post.py
