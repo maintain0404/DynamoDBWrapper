@@ -1,6 +1,6 @@
 import secret_keys
 
-REGION_NAME = 'ap-northeast-2'
+REGION_NAME = 'ap-northeast-2' # 서울
 AWS_ACCESS_KEY_ID = secret_keys.aws_secret['AWS']['Access Key ID']
 AWS_SECRET_ACCESS_KEY = secret_keys.aws_secret['AWS']['Security Access Key']
 
